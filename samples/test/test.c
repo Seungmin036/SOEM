@@ -13,7 +13,9 @@ static ecx_contextt ctx;
 
 static const char *state_to_string(uint16 state)
 {
-   switch (state & EC_STATE_MASK)
+   state &= (uint16)~EC_STATE_ACK;
+
+   switch (state)
    {
    case EC_STATE_INIT:
       return "INIT";
