@@ -25,6 +25,7 @@ foreach(target IN ITEMS
     eoe_test
     firm_update
     simple_ng
+    test
     slaveinfo)
   if (TARGET ${target})
     target_compile_options(${target} PRIVATE
