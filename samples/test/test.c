@@ -11,6 +11,25 @@
 
 static ecx_contextt ctx;
 
+static const char *state_to_string(uint16 state)
+{
+   switch (state & EC_STATE_MASK)
+   {
+   case EC_STATE_INIT:
+      return "INIT";
+   case EC_STATE_PRE_OP:
+      return "PRE_OP";
+   case EC_STATE_BOOT:
+      return "BOOT";
+   case EC_STATE_SAFE_OP:
+      return "SAFE_OP";
+   case EC_STATE_OPERATIONAL:
+      return "OP";
+   default:
+      return "UNKNOWN";
+   }
+}
+
 static int sdo_read_u8(uint16 slave, uint16 index, uint8 subidx, uint8 *value)
 {
    int size = sizeof(*value);
@@ -42,13 +61,18 @@ static void drain_errors(void)
 
 static void print_sdo_failure(uint16 slave, uint16 index, uint8 subidx)
 {
-   printf("0x%04X:%02X read failed on slave %u\n", index, subidx, slave);
+   uint16 state = ctx.slavelist[slave].state;
+
+   printf("0x%04X:%02X read failed on slave %u (state=0x%02X %s)\n",
+          index, subidx, slave, state, state_to_string(state));
    drain_errors();
 }
 
 static void dump_assign_object(uint16 slave, uint16 index)
 {
    uint8 count = 0;
+
+   printf("Reading 0x%04X:00\n", index);
 
    if (!sdo_read_u8(slave, index, 0x00, &count))
    {
@@ -74,6 +98,8 @@ static void dump_assign_object(uint16 slave, uint16 index)
 static void dump_map_object(uint16 slave, uint16 index)
 {
    uint8 count = 0;
+
+   printf("Reading 0x%04X:00\n", index);
 
    if (!sdo_read_u8(slave, index, 0x00, &count))
    {
@@ -167,7 +193,19 @@ int main(int argc, char *argv[])
       return EXIT_FAILURE;
    }
 
+   printf("Initial master state : 0x%02X %s\n",
+          ctx.slavelist[0].state, state_to_string(ctx.slavelist[0].state));
+   printf("Initial slave state  : 0x%02X %s\n",
+          ctx.slavelist[slave].state, state_to_string(ctx.slavelist[slave].state));
+
+   ctx.slavelist[0].state = EC_STATE_PRE_OP;
+   ecx_writestate(&ctx, 0);
    ecx_statecheck(&ctx, 0, EC_STATE_PRE_OP, EC_TIMEOUTSTATE);
+
+   printf("After PRE_OP request master state : 0x%02X %s\n",
+          ctx.slavelist[0].state, state_to_string(ctx.slavelist[0].state));
+   printf("After PRE_OP request slave state  : 0x%02X %s\n\n",
+          ctx.slavelist[slave].state, state_to_string(ctx.slavelist[slave].state));
 
    printf("Target slave: %u\n", slave);
    printf("Name        : %s\n", ctx.slavelist[slave].name);
