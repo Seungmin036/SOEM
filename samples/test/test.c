@@ -36,6 +36,18 @@ static int sdo_read_u8(uint16 slave, uint16 index, uint8 subidx, uint8 *value)
 {
    int size = sizeof(*value);
    int wkc = ecx_SDOread(&ctx, slave, index, subidx, FALSE, &size, value, EC_TIMEOUTRXM);
+   if(wkc <= 0)
+   {
+      printf("SDO read failed for 0x%04X:%02X on slave %u, wkc=%d\n", index, subidx, slave, wkc);
+      return FALSE;
+   }
+   else if (size != (int)sizeof(*value))
+   {
+      printf("SDO read size mismatch for 0x%04X:%02X on slave %u, expected=%zu got=%d\n",
+             index, subidx, slave, sizeof(*value), size);
+      return FALSE;
+   }
+   // printf("wkc=%d, size=%d,  (int)sizeof(*value)=%d\n", wkc, size,  (int)sizeof(*value));
    return (wkc > 0) && (size == (int)sizeof(*value));
 }
 
@@ -43,6 +55,16 @@ static int sdo_read_u16(uint16 slave, uint16 index, uint8 subidx, uint16 *value)
 {
    int size = sizeof(*value);
    int wkc = ecx_SDOread(&ctx, slave, index, subidx, FALSE, &size, value, EC_TIMEOUTRXM);
+   if(wkc <= 0)
+   {
+      printf("SDO read failed for 0x%04X:%02X on slave %u, wkc=%d\n", index, subidx, slave, wkc);
+      return FALSE;
+   }
+   else if (size != (int)sizeof(*value))
+   {
+      printf("SDO read size mismatch for 0x%04X:%02X on slave %u, expected=%zu got=%d\n", index, subidx, slave, sizeof(*value), size);
+      return FALSE;
+   }
    return (wkc > 0) && (size == (int)sizeof(*value));
 }
 
@@ -50,7 +72,25 @@ static int sdo_read_u32(uint16 slave, uint16 index, uint8 subidx, uint32 *value)
 {
    int size = sizeof(*value);
    int wkc = ecx_SDOread(&ctx, slave, index, subidx, FALSE, &size, value, EC_TIMEOUTRXM);
+   if(wkc <= 0)
+   {
+      printf("SDO read failed for 0x%04X:%02X on slave %u, wkc=%d\n", index, subidx, slave, wkc);
+      return FALSE;
+   }
+   else if (size != (int)sizeof(*value))
+   {
+      printf("SDO read size mismatch for 0x%04X:%02X on slave %u, expected=%zu got=%d\n",
+             index, subidx, slave, sizeof(*value), size);
+      return FALSE;
+   }
    return (wkc > 0) && (size == (int)sizeof(*value));
+}
+
+static int sdo_write_u16(uint16 slave, uint16 index, uint8 subidx, uint16 value)
+{
+   int size = sizeof(value);
+   int wkc = ecx_SDOwrite(&ctx, slave, index, subidx, FALSE, size, &value, EC_TIMEOUTRXM);
+   return (wkc > 0);
 }
 
 static void drain_errors(void)
@@ -135,8 +175,8 @@ static void dump_map_object(uint16 slave, uint16 index)
 static void dump_fixed_objects(uint16 slave)
 {
    static const uint16 assign_indices[] = {0x1C12, 0x1C13};
-   static const uint16 rxpdo_maps[] = {0x1600, 0x1601, 0x1602, 0x1603};
-   static const uint16 txpdo_maps[] = {0x1A00, 0x1A01, 0x1A02, 0x1A03};
+   static const uint16 rxpdo_maps[] = {0x1703};
+   static const uint16 txpdo_maps[] = {0x1B03};
    size_t i;
 
    printf("[PDO assignment]\n");
@@ -157,6 +197,8 @@ static void dump_fixed_objects(uint16 slave)
       dump_map_object(slave, txpdo_maps[i]);
    }
 }
+
+static uint8 IOmap[4096];
 
 int main(int argc, char *argv[])
 {
@@ -200,23 +242,83 @@ int main(int argc, char *argv[])
    printf("Initial slave state  : 0x%02X %s\n",
           ctx.slavelist[slave].state, state_to_string(ctx.slavelist[slave].state));
 
+   /* 1) 전역 PRE_OP 요청 */
    ctx.slavelist[0].state = EC_STATE_PRE_OP;
    ecx_writestate(&ctx, 0);
    ecx_statecheck(&ctx, 0, EC_STATE_PRE_OP, EC_TIMEOUTSTATE);
+
+   /* 2) 타겟 슬레이브 상태 명시적 확인 (필요 시 직접 요청) */
+   if (ctx.slavelist[slave].state != EC_STATE_PRE_OP)
+   {
+      printf("Slave %u is not PRE_OP yet, requesting directly...\n", slave);
+      ctx.slavelist[slave].state = EC_STATE_PRE_OP;
+      ecx_writestate(&ctx, slave);
+      ecx_statecheck(&ctx, slave, EC_STATE_PRE_OP, EC_TIMEOUTSTATE);
+   }
 
    printf("After PRE_OP request master state : 0x%02X %s\n",
           ctx.slavelist[0].state, state_to_string(ctx.slavelist[0].state));
    printf("After PRE_OP request slave state  : 0x%02X %s\n\n",
           ctx.slavelist[slave].state, state_to_string(ctx.slavelist[slave].state));
 
-   printf("Target slave: %u\n", slave);
-   printf("Name        : %s\n", ctx.slavelist[slave].name);
-   printf("Vendor ID   : 0x%08X\n", ctx.slavelist[slave].eep_man);
-   printf("Product Code: 0x%08X\n", ctx.slavelist[slave].eep_id);
-   printf("Revision    : 0x%08X\n\n", ctx.slavelist[slave].eep_rev);
-
+   if (ctx.slavelist[slave].state != EC_STATE_PRE_OP)
+   {
+      printf("ERROR: slave %u failed to reach PRE_OP (0x%02X %s)\n",
+             slave, ctx.slavelist[slave].state, state_to_string(ctx.slavelist[slave].state));
+      ecx_close(&ctx);
+      return EXIT_FAILURE;
+   }
    dump_fixed_objects(slave);
 
+   printf("Starting config map/dc + SAFE_OP/OP state transitions\n");
+   if (!ecx_config_map_group(&ctx, IOmap, 0))
+   {
+      printf("ecx_config_map_group failed\n");
+      ecx_close(&ctx);
+      return EXIT_FAILURE;
+   }
+
+   // ecx_configdc(&ctx);
+   /*MASTER state check*/
+   ctx.slavelist[0].state = EC_STATE_SAFE_OP;
+   ctx.slavelist[slave].state = EC_STATE_SAFE_OP;
+   ecx_writestate(&ctx, 0);
+   ecx_statecheck(&ctx, 0, EC_STATE_SAFE_OP, EC_TIMEOUTSTATE);
+   /*SLAVE state check*/
+   ecx_writestate(&ctx, slave);
+   ecx_statecheck(&ctx, slave, EC_STATE_SAFE_OP, EC_TIMEOUTSTATE);
+
+   printf("After SAFE_OP request master state : 0x%02X %s\n",
+          ctx.slavelist[0].state, state_to_string(ctx.slavelist[0].state));
+   printf("After SAFE_OP request slave state  : 0x%02X %s\n",
+          ctx.slavelist[slave].state, state_to_string(ctx.slavelist[slave].state));
+   printf("SAFE_OP OK\n");
+
+   /* ================= Send process data before requesting OP ================== */
+   printf("Sending process data before OP request...\n");
+   for (int i = 0; i < 100; i++) {
+      ecx_send_processdata(&ctx);
+      ecx_receive_processdata(&ctx, EC_TIMEOUTRET);
+      osal_usleep(1000);  // 1 ms
+   }
+   ctx.slavelist[0].state = EC_STATE_OPERATIONAL;
+
+   ecx_writestate(&ctx, 0);
+   ecx_statecheck(&ctx, slave, EC_STATE_OPERATIONAL, EC_TIMEOUTSTATE);
+   ecx_statecheck(&ctx, 0, EC_STATE_OPERATIONAL, EC_TIMEOUTSTATE);
+   printf("After OP request master state : 0x%02X %s\n",
+          ctx.slavelist[0].state, state_to_string(ctx.slavelist[0].state));
+   printf("After OP request slave state  : 0x%02X %s\n\n",
+          ctx.slavelist[slave].state, state_to_string(ctx.slavelist[slave].state));
+
+   
+   ecx_readstate(&ctx);
+   printf("After OP request master state : 0x%02X %s\n",
+         ctx.slavelist[0].state, state_to_string(ctx.slavelist[0].state));
+   printf("After OP request slave state  : 0x%02X %s\n",
+         ctx.slavelist[slave].state, state_to_string(ctx.slavelist[slave].state));
+   printf("AL status code : 0x%04X\n", ctx.slavelist[slave].ALstatuscode);
+   printf("AL status text : %s\n", ec_ALstatuscode2string(ctx.slavelist[slave].ALstatuscode));
    ecx_close(&ctx);
    return EXIT_SUCCESS;
 }
