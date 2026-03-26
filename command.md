@@ -1,0 +1,1 @@
+cd ~/SOEM/build_console && sudo ./samples/slaveinfo/slaveinfo enp88s0 -sdo > your_file_name.txt
